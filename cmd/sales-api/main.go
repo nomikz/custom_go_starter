@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"github.com/nomikz/training/internal/platform/database"
+	"github.com/nomikz/training/internal/product"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -27,7 +27,7 @@ func main() {
 	// =========================================================================
 	// Set up dependencies
 
-	db, err := openDB()
+	db, err := database.Open()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -39,9 +39,11 @@ func main() {
 	// =========================================================================
 	// Start API Service
 
+	ps := ProductService{db: db}
+
 	api := http.Server{
 		Addr:         "localhost:8000",
-		Handler:      http.HandlerFunc(ListProducts), // type conversion
+		Handler:      http.HandlerFunc(ps.List), // type conversion
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,
 	}
@@ -84,26 +86,20 @@ func main() {
 	}
 }
 
-type Product struct {
-	Name     string `json:"name"`
-	Cost     int    `json:"cost"`
-	Quantity int    `json:"quantity"`
+
+
+type ProductService struct {
+	db *sqlx.DB
 }
 
-// Echo is a basic HTTP Handler.
-// If you open localhost:8000 in your browser, you may notice
-// double requets being made. This happens because the browser
-// sends a request in the background for a website favicon.
-func ListProducts(w http.ResponseWriter, r *http.Request) {
-	list := []Product{}
+func (p *ProductService) List(w http.ResponseWriter, r *http.Request) {
+	list, err := product.List(p.db)
 
-	list = append(list, Product{
-		Name:     "Apple",
-		Cost:     150,
-		Quantity: 8,
-	})
-
-	fmt.Println(len(list))
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		log.Println("Error querying db", err)
+		return
+	}
 
 	jsonData, err := json.Marshal(list)
 	if err != nil {
@@ -116,20 +112,4 @@ func ListProducts(w http.ResponseWriter, r *http.Request) {
 	if _, err := w.Write(jsonData); err != nil {
 		log.Println("Error writing: ", err)
 	}
-}
-
-func openDB() (*sqlx.DB, error) {
-	q := url.Values{}
-	q.Set("sslmode", "disable")
-	q.Set("timezone", "utc")
-
-	u := url.URL{
-		Scheme:   "postgres",
-		User:     url.UserPassword("postgres", "postgres"),
-		Host:     "localhost:5433",
-		Path:     "postgres",
-		RawQuery: q.Encode(),
-	}
-
-	return sqlx.Open("postgres", u.String())
 }
