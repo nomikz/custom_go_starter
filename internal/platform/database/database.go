@@ -6,16 +6,27 @@ import (
 	"net/url"
 )
 
-func Open() (*sqlx.DB, error) {
+type Config struct {
+	Host       string
+	Name       string
+	User       string
+	Password   string
+	DisableTLS bool
+}
+
+func Open(cfg Config) (*sqlx.DB, error) {
 	q := url.Values{}
-	q.Set("sslmode", "disable")
+	q.Set("sslmode", "require")
+	if cfg.DisableTLS {
+		q.Set("sslmode", "disable")
+	}
 	q.Set("timezone", "utc")
 
 	u := url.URL{
 		Scheme:   "postgres",
-		User:     url.UserPassword("postgres", "postgres"),
-		Host:     "localhost:5433",
-		Path:     "postgres",
+		User:     url.UserPassword(cfg.User, cfg.Password),
+		Host:     cfg.Host,
+		Path:     cfg.Name,
 		RawQuery: q.Encode(),
 	}
 
