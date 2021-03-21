@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
+	"github.com/nomikz/training/internal/platform/conf"
 	"github.com/nomikz/training/internal/platform/database"
-	"github.com/nomikz/training/internal/product"
 	"log"
 	"net/http"
 	"os"
@@ -12,11 +12,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
+	"github.com/nomikz/training/cmd/sales-api/internal/handlers"
 )
 
 func main() {
+	log := log.New(os.Stdout, "Sales : ", log.LstdFlags)
 
 	// =========================================================================
 	// App Starting
@@ -25,9 +26,51 @@ func main() {
 	defer log.Println("main : Completed")
 
 	// =========================================================================
+	// Get Configuration
+
+	var cfg struct {
+		Web struct {
+			Address         string        `conf:"default:localhost:8000"`
+			ReadTimeout     time.Duration `conf:"default:5s"`
+			WriteTimeout    time.Duration `conf:"default:5s"`
+			ShutdownTimeout time.Duration `conf:"default:5s"`
+		}
+		DB struct {
+			User       string `conf:"default:postgres"`
+			Password   string `conf:"default:postgres,noprint"`
+			Host       string `conf:"default:localhost:5433"`
+			Name       string `conf:"default:postgres"`
+			DisableTLS bool   `conf:"default:true"`
+		}
+	}
+
+	if err := conf.Parse(os.Args[1:], "sales", &cfg); err != nil {
+		if err == conf.ErrHelpWanted {
+			usage, err := conf.Usage("SALES", &cfg)
+			if err != nil {
+				log.Fatalf("error : generating config usage : %v", err)
+			}
+			fmt.Println(usage)
+			return
+		}
+		log.Fatalf("error: parsing config: %s", err)
+	}
+	out, err := conf.String(&cfg)
+	if err != nil {
+		log.Fatalf("error : generating config for output : %v", err)
+	}
+	log.Printf("main : Config :\n%v\n", out)
+
+	// =========================================================================
 	// Set up dependencies
 
-	db, err := database.Open()
+	db, err := database.Open(database.Config{
+		Host:       cfg.DB.Host,
+		User:       cfg.DB.User,
+		Password:   cfg.DB.Password,
+		Name:       cfg.DB.Name,
+		DisableTLS: cfg.DB.DisableTLS,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -39,17 +82,14 @@ func main() {
 	// =========================================================================
 	// Start API Service
 
-	ps := ProductService{db: db}
-
 	api := http.Server{
-		Addr:         "localhost:8000",
-		Handler:      http.HandlerFunc(ps.List), // type conversion
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 5 * time.Second,
+		Addr:         cfg.Web.Address,
+		Handler:      handlers.API(log, db),
+		ReadTimeout:  cfg.Web.ReadTimeout,
+		WriteTimeout: cfg.Web.WriteTimeout,
 	}
 
 	serverErrors := make(chan error, 1)
-
 	go func() {
 		log.Printf("main : API listening on %s", api.Addr)
 		serverErrors <- api.ListenAndServe()
@@ -69,47 +109,18 @@ func main() {
 		log.Println("main : Start shutdown")
 
 		// Give outstanding requests a deadline for completion.
-		const timeout = 5 * time.Second
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(context.Background(), cfg.Web.ReadTimeout)
 		defer cancel()
 
 		// Asking listener to shutdown and load shed.
 		err := api.Shutdown(ctx)
 		if err != nil {
-			log.Printf("main : Graceful shutdown did not complete in %v : %v", timeout, err)
+			log.Printf("main : Graceful shutdown did not complete in %v : %v", cfg.Web.ReadTimeout, err)
 			err = api.Close()
 		}
 
 		if err != nil {
 			log.Fatalf("main : could not stop server gracefully : %v", err)
 		}
-	}
-}
-
-
-
-type ProductService struct {
-	db *sqlx.DB
-}
-
-func (p *ProductService) List(w http.ResponseWriter, r *http.Request) {
-	list, err := product.List(p.db)
-
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		log.Println("Error querying db", err)
-		return
-	}
-
-	jsonData, err := json.Marshal(list)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("content-type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write(jsonData); err != nil {
-		log.Println("Error writing: ", err)
 	}
 }
